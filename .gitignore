@@ -5,3 +5,6 @@ extensions/*/extension.wasm
 extensions/*/grammars/*.wasm
 *.tar.gz
 .DS_Store
+
+# Grammar sources fetched while building an extension
+extensions/*/grammars/
