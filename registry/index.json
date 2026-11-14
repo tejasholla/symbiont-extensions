@@ -1,1 +1,24 @@
-{"extensions": []}
+{
+  "extensions": [
+    {
+      "name": "Git Firefly",
+      "version": "0.1.0",
+      "description": "Provides Git Syntax Highlighting",
+      "authors": [
+        "d1y <chenhonzhou@gmail.com>",
+        "Peter Tripp <petertripp@gmail.com>",
+        "Tejas Holla <tejasholla17@gmail.com>"
+      ],
+      "repository": "https://github.com/tejasholla/symbiont-extensions",
+      "schema_version": 1,
+      "wasm_api_version": null,
+      "provides": [
+        "languages",
+        "grammars"
+      ],
+      "id": "git-firefly",
+      "published_at": "2026-11-14T19:13:41Z",
+      "download_url": "https://github.com/tejasholla/symbiont-extensions/releases/download/git-firefly-v0.1.0/git-firefly.tar.gz"
+    }
+  ]
+}
