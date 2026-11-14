@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+fixture=$(mktemp -d)
+trap 'rm -rf -- "$fixture"' EXIT
+mkdir -p "$fixture/bin" "$fixture/script" "$fixture/registry" "$fixture/extensions"
+cp "$repo_root/script/publish" "$fixture/script/publish"
+printf '%s\n' '{"extensions": []}' > "$fixture/registry/index.json"
+for id in html emmet git-firefly; do
+    mkdir -p "$fixture/extensions/$id"
+    cp "$repo_root/extensions/$id/extension.toml" "$fixture/extensions/$id/extension.toml"
+done
+
+cat > "$fixture/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1 $2" == 'release view' ]]; then
+    [[ "${RELEASE_EXISTS:-0}" == 1 ]]
+    exit
+fi
+printf 'unexpected gh call: %s\n' "$*" >&2
+exit 99
+STUB
+cat > "$fixture/bin/symbiont-extension" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+while (($#)); do
+    case "$1" in
+        --output-dir) output_dir=$2; shift 2 ;;
+        --source-dir) source_dir=$2; shift 2 ;;
+        --scratch-dir) shift 2 ;;
+        *) exit 99 ;;
+    esac
+done
+mkdir -p "$output_dir"
+printf 'test archive' > "$output_dir/archive.tar.gz"
+python3 - "$source_dir/extension.toml" "$output_dir/manifest.json" <<'PY'
+import json
+import sys
+import tomllib
+with open(sys.argv[1], 'rb') as file:
+    manifest = tomllib.load(file)
+metadata = {key: manifest[key] for key in ('name', 'version', 'description', 'authors', 'repository', 'schema_version')}
+metadata['wasm_api_version'] = None if manifest['id'] == 'git-firefly' else '0.1.0'
+metadata['provides'] = ['languages', 'grammars'] if manifest['id'] == 'git-firefly' else ['languages', 'language-servers']
+with open(sys.argv[2], 'w') as file:
+    json.dump(metadata, file)
+PY
+STUB
+chmod +x "$fixture/bin/gh" "$fixture/bin/symbiont-extension"
+
+before=$(sha256sum "$fixture/registry/index.json")
+if (cd "$fixture" && PATH="$fixture/bin:$PATH" RELEASE_EXISTS=1 script/publish html > "$fixture/existing.out" 2>&1); then
+    printf 'FAIL: existing release was accepted\n' >&2
+    exit 1
+fi
+grep -q 'already published' "$fixture/existing.out" || { cat "$fixture/existing.out" >&2; exit 1; }
+[[ "$(sha256sum "$fixture/registry/index.json")" == "$before" ]] || { printf 'FAIL: index changed on duplicate\n' >&2; exit 1; }
+
+for id in html emmet git-firefly; do
+    (cd "$fixture" && PATH="$fixture/bin:$PATH" RELEASE_EXISTS=0 script/publish "$id" --dry-run > "$fixture/dry-run.out")
+    url="https://github.com/tejasholla/symbiont-extensions/releases/download/$id-v0.1.0/$id.tar.gz"
+    jq -e --arg id "$id" --arg url "$url" \
+        'select(.id == $id and .version == "0.1.0" and .download_url == $url)' \
+        "$fixture/dry-run.out" > /dev/null
+    [[ "$(sha256sum "$fixture/registry/index.json")" == "$before" ]] || { printf 'FAIL: dry run changed index\n' >&2; exit 1; }
+done
+printf 'PASS: duplicate release refused; three dry runs produced valid entries; index unchanged\n'

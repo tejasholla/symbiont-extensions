@@ -1,0 +1,58 @@
+id = "emmet"
+name = "Emmet"
+description = "Emmet support"
+version = "0.1.0"
+schema_version = 1
+authors = ["Piotr Osiewicz <piotr@zed.dev>", "Tejas Holla <tejasholla17@gmail.com>"]
+repository = "https://github.com/tejasholla/symbiont-extensions"
+
+[language_servers.emmet-language-server]
+name = "Emmet Language Server"
+languages = [
+    "Angular",
+    "Blade",
+    "CSS",
+    "Django",
+    "ERB",
+    "Elixir",
+    "HEEx",
+    "HTML",
+    "HTML+ERB",
+    "JavaScript",
+    "Jinja2",
+    "LESS",
+    "Liquid",
+    "Nunjucks",
+    "PHP",
+    "SCSS",
+    "Statamic Antlers",
+    "TSX",
+    "Twig",
+    "Vue.js",
+]
+opt_in_languages = [
+    "ERB",
+    "Elixir",
+]
+
+[language_servers.emmet-language-server.language_ids]
+"Angular" = "angular"
+"Blade" = "blade"
+"CSS" = "css"
+"Django" = "html"
+"ERB" = "eruby"
+"Elixir" = "elixir"
+"HEEx" = "heex"
+"HTML" = "html"
+"HTML+ERB" = "eruby"
+"JavaScript" = "javascriptreact"
+"Jinja2" = "html"
+"LESS" = "less"
+"Liquid" = "html"
+"Nunjucks" = "html"
+"PHP" = "php"
+"SCSS" = "scss"
+"Statamic Antlers" = "html"
+"TSX" = "typescriptreact"
+"Twig" = "twig"
+"Vue.js" = "vue"

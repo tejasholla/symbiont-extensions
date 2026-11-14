@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    printf 'Usage: script/publish <id> [--dry-run]\n' >&2
+    exit 2
+}
+
+if (($# < 1 || $# > 2)); then usage; fi
+id=$1
+dry_run=0
+if (($# == 2)); then
+    [[ "$2" == --dry-run ]] || usage
+    dry_run=1
+fi
+[[ "$id" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || usage
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+source_dir="$repo_root/extensions/$id"
+manifest="$source_dir/extension.toml"
+index="$repo_root/registry/index.json"
+[[ -f "$manifest" && -f "$index" ]] || { printf 'Missing extension or registry index: %s\n' "$id" >&2; exit 1; }
+
+readarray -t identity < <(python3 - "$manifest" <<'PY'
+import sys
+import tomllib
+with open(sys.argv[1], 'rb') as file:
+    manifest = tomllib.load(file)
+print(manifest['id'])
+print(manifest['version'])
+PY
+)
+[[ "${identity[0]}" == "$id" ]] || { printf 'Manifest ID does not match directory: %s\n' "$id" >&2; exit 1; }
+version=${identity[1]}
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { printf 'Invalid extension version: %s\n' "$version" >&2; exit 1; }
+tag="$id-v$version"
+
+if gh release view "$tag" --repo tejasholla/symbiont-extensions > /dev/null 2>&1; then
+    printf '%s is already published\n' "$tag" >&2
+    exit 1
+fi
+
+build_dir=$(mktemp -d)
+trap 'rm -rf -- "$build_dir"' EXIT
+symbiont-extension --source-dir "$source_dir" --output-dir "$build_dir" --scratch-dir "$build_dir/scratch" >&2
+[[ -s "$build_dir/archive.tar.gz" && -s "$build_dir/manifest.json" ]] || {
+    printf 'symbiont-extension did not produce archive.tar.gz and manifest.json\n' >&2
+    exit 1
+}
+published_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+download_url="https://github.com/tejasholla/symbiont-extensions/releases/download/$tag/$id.tar.gz"
+entry=$(jq -ce --arg id "$id" --arg published_at "$published_at" --arg download_url "$download_url" \
+    '. + {id: $id, published_at: $published_at, download_url: $download_url}' "$build_dir/manifest.json")
+
+if ((dry_run)); then
+    printf '%s\n' "$entry" | jq .
+    exit 0
+fi
+
+jq -e '.extensions | type == "array"' "$index" > /dev/null
+cp "$build_dir/archive.tar.gz" "$build_dir/$id.tar.gz"
+gh release create "$tag" "$build_dir/$id.tar.gz" --repo tejasholla/symbiont-extensions \
+    --title "$id $version" --notes "Symbiont extension $id $version"
+
+new_index="$build_dir/index.json"
+jq --argjson entry "$entry" '.extensions |= (map(select(.id != $entry.id)) + [$entry] | sort_by(.id))' \
+    "$index" > "$new_index"
+cp "$new_index" "$index"
+git -C "$repo_root" add registry/index.json
+git -C "$repo_root" commit -m "Publish $id $version" -m 'Co-worked-with: Codex'
+git -C "$repo_root" push
+printf 'Published %s\n' "$tag" >&2

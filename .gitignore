@@ -1,0 +1,7 @@
+target/
+extensions/*/target/
+extensions/*/Cargo.lock
+extensions/*/extension.wasm
+extensions/*/grammars/*.wasm
+*.tar.gz
+.DS_Store
