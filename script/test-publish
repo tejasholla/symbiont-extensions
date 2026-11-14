@@ -18,7 +18,18 @@ if [[ "$1 $2" == 'release view' ]]; then
     [[ "${RELEASE_EXISTS:-0}" == 1 ]]
     exit
 fi
+if [[ "$1 $2" == 'release create' ]]; then
+    exit 0
+fi
 printf 'unexpected gh call: %s\n' "$*" >&2
+exit 99
+STUB
+cat > "$fixture/bin/git" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+    *' add registry/index.json '*|*' commit '*|*' push '*) exit 0 ;;
+esac
+printf 'unexpected git call: %s\n' "$*" >&2
 exit 99
 STUB
 cat > "$fixture/bin/symbiont-extension" <<'STUB'
@@ -42,12 +53,16 @@ with open(sys.argv[1], 'rb') as file:
     manifest = tomllib.load(file)
 metadata = {key: manifest[key] for key in ('name', 'version', 'description', 'authors', 'repository', 'schema_version')}
 metadata['wasm_api_version'] = None if manifest['id'] == 'git-firefly' else '0.1.0'
-metadata['provides'] = ['languages', 'grammars'] if manifest['id'] == 'git-firefly' else ['languages', 'language-servers']
+metadata['provides'] = {
+    'html': ['languages', 'grammars', 'language-servers'],
+    'emmet': ['language-servers'],
+    'git-firefly': ['languages', 'grammars'],
+}[manifest['id']]
 with open(sys.argv[2], 'w') as file:
     json.dump(metadata, file)
 PY
 STUB
-chmod +x "$fixture/bin/gh" "$fixture/bin/symbiont-extension"
+chmod +x "$fixture/bin/gh" "$fixture/bin/git" "$fixture/bin/symbiont-extension"
 
 before=$(sha256sum "$fixture/registry/index.json")
 if (cd "$fixture" && PATH="$fixture/bin:$PATH" RELEASE_EXISTS=1 script/publish html > "$fixture/existing.out" 2>&1); then
@@ -63,6 +78,28 @@ for id in html emmet git-firefly; do
     jq -e --arg id "$id" --arg url "$url" \
         'select(.id == $id and .version == "0.1.0" and .download_url == $url)' \
         "$fixture/dry-run.out" > /dev/null
+    jq -e --arg id "$id" --arg url "$url" '
+        (keys | sort) == (["id", "name", "version", "description", "authors", "repository", "schema_version", "wasm_api_version", "provides", "published_at", "download_url"] | sort)
+        and .id == $id
+        and (.name | type == "string" and length > 0)
+        and .version == "0.1.0"
+        and (.description | type == "string")
+        and (.authors | type == "array" and length > 0 and all(.[]; type == "string"))
+        and .repository == "https://github.com/tejasholla/symbiont-extensions"
+        and .schema_version == 1
+        and .wasm_api_version == (if $id == "git-firefly" then null else "0.1.0" end)
+        and (.provides | type == "array" and length > 0 and all(.[]; IN("languages", "grammars", "language-servers")))
+        and (.published_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+        and .download_url == $url
+    ' "$fixture/dry-run.out" > /dev/null
+    if [[ "$id" == html ]]; then
+        cp "$fixture/dry-run.out" "$fixture/html-dry-run.out"
+    fi
     [[ "$(sha256sum "$fixture/registry/index.json")" == "$before" ]] || { printf 'FAIL: dry run changed index\n' >&2; exit 1; }
 done
-printf 'PASS: duplicate release refused; three dry runs produced valid entries; index unchanged\n'
+
+(cd "$fixture" && PATH="$fixture/bin:$PATH" RELEASE_EXISTS=0 script/publish html > "$fixture/published.out" 2>&1)
+jq -e --slurpfile expected "$fixture/html-dry-run.out" \
+    '(.extensions | type == "array" and length == 1) and (.extensions[0] | del(.published_at) == ($expected[0] | del(.published_at)))' \
+    "$fixture/registry/index.json" > /dev/null
+printf 'PASS: duplicate refused; three dry-run entries match registry fields; stubbed publish wrote index\n'
