@@ -21,6 +21,19 @@ manifest="$source_dir/extension.toml"
 index="$repo_root/registry/index.json"
 [[ -f "$manifest" && -f "$index" ]] || { printf 'Missing extension or registry index: %s\n' "$id" >&2; exit 1; }
 
+if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then
+    printf 'Refusing to publish from a dirty tree\n' >&2
+    exit 1
+fi
+if ! unpushed_commits=$(git -C "$repo_root" rev-list --count '@{upstream}..HEAD'); then
+    printf 'Refusing to publish without a configured upstream branch\n' >&2
+    exit 1
+fi
+if [[ "$unpushed_commits" != 0 ]]; then
+    printf 'Refusing to publish with unpushed commits\n' >&2
+    exit 1
+fi
+
 readarray -t identity < <(python3 - "$manifest" <<'PY'
 import sys
 import tomllib
@@ -59,14 +72,17 @@ fi
 
 jq -e '.extensions | type == "array"' "$index" > /dev/null
 cp "$build_dir/archive.tar.gz" "$build_dir/$id.tar.gz"
-gh release create "$tag" "$build_dir/$id.tar.gz" --repo tejasholla/symbiont-extensions \
-    --title "$id $version" --notes "Symbiont extension $id $version"
-
 new_index="$build_dir/index.json"
 jq --argjson entry "$entry" '.extensions |= (map(select(.id != $entry.id)) + [$entry] | sort_by(.id))' \
     "$index" > "$new_index"
 cp "$new_index" "$index"
 git -C "$repo_root" add registry/index.json
 git -C "$repo_root" commit -m "Publish $id $version" -m 'Co-worked-with: Codex'
-git -C "$repo_root" push
+if ! git -C "$repo_root" push; then
+    printf 'Index push failed. Push the local publish commit, then rerun script/publish %s.\n' "$id" >&2
+    exit 1
+fi
+gh release create "$tag" "$build_dir/$id.tar.gz" --repo tejasholla/symbiont-extensions \
+    --target "$(git -C "$repo_root" rev-parse HEAD)" \
+    --title "$id $version" --notes "Symbiont extension $id $version"
 printf 'Published %s\n' "$tag" >&2

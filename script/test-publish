@@ -19,6 +19,7 @@ if [[ "$1 $2" == 'release view' ]]; then
     exit
 fi
 if [[ "$1 $2" == 'release create' ]]; then
+    printf 'release create %s\n' "$*" >> "$CALLS"
     exit 0
 fi
 printf 'unexpected gh call: %s\n' "$*" >&2
@@ -26,8 +27,24 @@ exit 99
 STUB
 cat > "$fixture/bin/git" <<'STUB'
 #!/usr/bin/env bash
+if [[ "$*" == *' status --porcelain'* ]]; then
+    [[ "${DIRTY:-0}" == 1 ]] && printf ' M extensions/html/extension.toml\n'
+    exit 0
+fi
+if [[ "$*" == *' rev-list --count '* ]]; then
+    printf '%s\n' "${UNPUSHED:-0}"
+    exit 0
+fi
+if [[ "$*" == *' rev-parse HEAD'* ]]; then
+    printf 'test-head-sha\n'
+    exit 0
+fi
 case " $* " in
-    *' add registry/index.json '*|*' commit '*|*' push '*) exit 0 ;;
+    *' add registry/index.json '*|*' commit '*) exit 0 ;;
+    *' push '*)
+        printf 'push\n' >> "$CALLS"
+        [[ "${PUSH_FAIL:-0}" == 0 ]]
+        exit ;;
 esac
 printf 'unexpected git call: %s\n' "$*" >&2
 exit 99
@@ -65,6 +82,23 @@ STUB
 chmod +x "$fixture/bin/gh" "$fixture/bin/git" "$fixture/bin/symbiont-extension"
 
 before=$(sha256sum "$fixture/registry/index.json")
+export CALLS="$fixture/calls"
+: > "$CALLS"
+if (cd "$fixture" && PATH="$fixture/bin:$PATH" DIRTY=1 script/publish html > "$fixture/dirty.out" 2>&1); then
+    printf 'FAIL: dirty tree was accepted\n' >&2
+    exit 1
+fi
+grep -q 'dirty' "$fixture/dirty.out" || { cat "$fixture/dirty.out" >&2; exit 1; }
+[[ "$(sha256sum "$fixture/registry/index.json")" == "$before" ]] || { printf 'FAIL: index changed on dirty tree\n' >&2; exit 1; }
+[[ ! -s "$CALLS" ]] || { printf 'FAIL: dirty tree reached push or release\n' >&2; exit 1; }
+
+if (cd "$fixture" && PATH="$fixture/bin:$PATH" UNPUSHED=1 script/publish html > "$fixture/unpushed.out" 2>&1); then
+    printf 'FAIL: unpushed tree was accepted\n' >&2
+    exit 1
+fi
+grep -q 'unpushed' "$fixture/unpushed.out" || { cat "$fixture/unpushed.out" >&2; exit 1; }
+[[ ! -s "$CALLS" ]] || { printf 'FAIL: unpushed tree reached push or release\n' >&2; exit 1; }
+
 if (cd "$fixture" && PATH="$fixture/bin:$PATH" RELEASE_EXISTS=1 script/publish html > "$fixture/existing.out" 2>&1); then
     printf 'FAIL: existing release was accepted\n' >&2
     exit 1
@@ -99,7 +133,20 @@ for id in html emmet git-firefly; do
 done
 
 (cd "$fixture" && PATH="$fixture/bin:$PATH" RELEASE_EXISTS=0 script/publish html > "$fixture/published.out" 2>&1)
+[[ "$(sed -n '1p' "$CALLS")" == push ]] || { printf 'FAIL: release preceded push\n' >&2; exit 1; }
+grep -q -- '--target test-head-sha' "$CALLS" || { printf 'FAIL: release target missing\n' >&2; exit 1; }
 jq -e --slurpfile expected "$fixture/html-dry-run.out" \
     '(.extensions | type == "array" and length == 1) and (.extensions[0] | del(.published_at) == ($expected[0] | del(.published_at)))' \
     "$fixture/registry/index.json" > /dev/null
-printf 'PASS: duplicate refused; three dry-run entries match registry fields; stubbed publish wrote index\n'
+before_failed_push=$(sha256sum "$fixture/registry/index.json")
+: > "$CALLS"
+if (cd "$fixture" && PATH="$fixture/bin:$PATH" PUSH_FAIL=1 script/publish emmet > "$fixture/push-failed.out" 2>&1); then
+    printf 'FAIL: failed index push was accepted\n' >&2
+    exit 1
+fi
+grep -q 'Index push failed' "$fixture/push-failed.out" || { cat "$fixture/push-failed.out" >&2; exit 1; }
+grep -q 'Push the local publish commit' "$fixture/push-failed.out" || { printf 'FAIL: recovery hint missing\n' >&2; exit 1; }
+[[ "$(sed -n '1p' "$CALLS")" == push ]] || { printf 'FAIL: failed push did not occur\n' >&2; exit 1; }
+[[ "$(wc -l < "$CALLS")" == 1 ]] || { printf 'FAIL: release created after failed push\n' >&2; exit 1; }
+[[ "$(sha256sum "$fixture/registry/index.json")" != "$before_failed_push" ]] || { printf 'FAIL: failed push did not leave a recoverable local index commit\n' >&2; exit 1; }
+printf 'PASS: dirty and unpushed trees refused; duplicate refused; three dry-run entries match registry fields; push precedes targeted release\n'
